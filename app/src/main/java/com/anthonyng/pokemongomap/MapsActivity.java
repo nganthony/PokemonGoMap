@@ -34,6 +34,9 @@ import rx.Subscriber;
 import rx.android.schedulers.AndroidSchedulers;
 import rx.schedulers.Schedulers;
 
+/**
+ * Displays a map showing all locations of pokemon in the area
+ */
 public class MapsActivity extends FragmentActivity implements OnMapReadyCallback,
         GoogleApiClient.ConnectionCallbacks,
         GoogleApiClient.OnConnectionFailedListener,
@@ -42,21 +45,24 @@ public class MapsActivity extends FragmentActivity implements OnMapReadyCallback
     private static final String TAG = "MapsActivity";
     private static final int REQUEST_ACCESS_FINE_LOCATION = 1;
 
-    private GoogleMap mMap;
+    private GoogleMap googleMap;
 
     private GoogleApiClient googleApiClient;
     private LocationRequest locationRequest;
+
+    //region Lifecycle and Activity methods
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_maps);
+
         // Obtain the SupportMapFragment and get notified when the map is ready to be used.
         SupportMapFragment mapFragment = (SupportMapFragment) getSupportFragmentManager()
                 .findFragmentById(R.id.map);
         mapFragment.getMapAsync(this);
 
-        // Here, thisActivity is the current activity
+        // Request to access user's location
         if (ContextCompat.checkSelfPermission(this,
                 Manifest.permission.ACCESS_FINE_LOCATION)
                 != PackageManager.PERMISSION_GRANTED) {
@@ -65,19 +71,15 @@ public class MapsActivity extends FragmentActivity implements OnMapReadyCallback
                     new String[]{Manifest.permission.ACCESS_FINE_LOCATION},
                     REQUEST_ACCESS_FINE_LOCATION);
         } else {
+            // User already granted access, request for location updates
             initializeLocationServices();
         }
     }
 
     @Override
-    protected void onStart() {
-        super.onStart();
-    }
-
-    @Override
-    protected void onStop() {
+    protected void onDestroy() {
         googleApiClient.disconnect();
-        super.onStop();
+        super.onDestroy();
     }
 
     @Override
@@ -89,6 +91,7 @@ public class MapsActivity extends FragmentActivity implements OnMapReadyCallback
                 if (grantResults.length > 0
                         && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
 
+                    // Request for location updates
                     initializeLocationServices();
                 }
 
@@ -97,6 +100,33 @@ public class MapsActivity extends FragmentActivity implements OnMapReadyCallback
         }
     }
 
+    //endregion
+
+    //region Google Maps methods
+
+    /**
+     * Manipulates the map once available.
+     * This callback is triggered when the map is ready to be used.
+     * This is where we can add markers or lines, add listeners or move the camera.
+     */
+    @Override
+    public void onMapReady(GoogleMap googleMap) {
+        this.googleMap = googleMap;
+
+        try {
+            this.googleMap.setMyLocationEnabled(true);
+        } catch (SecurityException e) {
+
+        }
+    }
+
+    //endregion
+
+    //region Google Play Services Methods
+
+    /**
+     * Connects to location services and creates a location request
+     */
     private void initializeLocationServices() {
         locationRequest = LocationRequest.create();
         locationRequest.setPriority(LocationRequest.PRIORITY_HIGH_ACCURACY);
@@ -112,19 +142,17 @@ public class MapsActivity extends FragmentActivity implements OnMapReadyCallback
         googleApiClient.connect();
     }
 
-    /**
-     * Manipulates the map once available.
-     * This callback is triggered when the map is ready to be used.
-     * This is where we can add markers or lines, add listeners or move the camera. In this case,
-     * we just add a marker near Sydney, Australia.
-     * If Google Play services is not installed on the device, the user will be prompted to install
-     * it inside the SupportMapFragment. This method will only be triggered once the user has
-     * installed Google Play services and returned to the app.
-     */
     @Override
-    public void onMapReady(GoogleMap googleMap) {
-        mMap = googleMap;
-        mMap.setMyLocationEnabled(true);
+    public void onLocationChanged(Location location) {
+        if(location != null) {
+            LatLng loc = new LatLng(location.getLatitude(), location.getLongitude());
+            googleMap.addMarker(new MarkerOptions().position(loc));
+            if (googleMap != null) {
+                googleMap.animateCamera(CameraUpdateFactory.newLatLngZoom(loc, 16.0f));
+            }
+
+            requestPokemonInLocation(location);
+        }
     }
 
     @Override
@@ -148,19 +176,14 @@ public class MapsActivity extends FragmentActivity implements OnMapReadyCallback
         googleApiClient.connect();
     }
 
-    @Override
-    public void onLocationChanged(Location location) {
-        if(location != null) {
-            LatLng loc = new LatLng(location.getLatitude(), location.getLongitude());
-            mMap.addMarker(new MarkerOptions().position(loc));
-            if (mMap != null) {
-                mMap.animateCamera(CameraUpdateFactory.newLatLngZoom(loc, 16.0f));
-            }
+    //endregion
 
-            requestPokemonInLocation(location);
-        }
-    }
+    //region Network Requests
 
+    /**
+     * Request pokemon in the area
+     * @param location Location to retrieve pokemon in area
+     */
     private void requestPokemonInLocation(final Location location) {
 
         Observable<List<Pokemon>> nearbyPokemonObservable = Observable.create(new Observable.OnSubscribe<List<Pokemon>>() {
@@ -203,4 +226,6 @@ public class MapsActivity extends FragmentActivity implements OnMapReadyCallback
                 });
 
     }
+
+    //endregion
 }
