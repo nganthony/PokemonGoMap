@@ -3,6 +3,7 @@ package com.anthonyng.pokemongomap;
 import android.Manifest;
 import android.content.pm.PackageManager;
 import android.location.Location;
+import android.location.LocationManager;
 import android.os.Bundle;
 import android.support.v4.app.ActivityCompat;
 import android.support.v4.app.FragmentActivity;
@@ -18,16 +19,20 @@ import com.google.android.gms.maps.CameraUpdateFactory;
 import com.google.android.gms.maps.GoogleMap;
 import com.google.android.gms.maps.OnMapReadyCallback;
 import com.google.android.gms.maps.SupportMapFragment;
+import com.google.android.gms.maps.model.BitmapDescriptorFactory;
 import com.google.android.gms.maps.model.LatLng;
+import com.google.android.gms.maps.model.Marker;
 import com.google.android.gms.maps.model.MarkerOptions;
 import com.pokegoapi.api.PokemonGo;
-import com.pokegoapi.api.pokemon.Pokemon;
-import com.pokegoapi.auth.PTCLogin;
+import com.pokegoapi.api.map.pokemon.CatchablePokemon;
+import com.pokegoapi.auth.PtcCredentialProvider;
 import com.pokegoapi.exceptions.LoginFailedException;
+import com.pokegoapi.exceptions.RemoteServerException;
 
+import java.util.HashSet;
 import java.util.List;
+import java.util.concurrent.TimeUnit;
 
-import POGOProtos.Networking.Envelopes.RequestEnvelopeOuterClass;
 import okhttp3.OkHttpClient;
 import rx.Observable;
 import rx.Subscriber;
@@ -49,6 +54,11 @@ public class MapsActivity extends FragmentActivity implements OnMapReadyCallback
 
     private GoogleApiClient googleApiClient;
     private LocationRequest locationRequest;
+    private Marker selectedMarker;
+    private boolean zoomedIntoCurrentLocation = false;
+
+    private HashSet<String> pokemonSet = new HashSet<>();
+
 
     //region Lifecycle and Activity methods
 
@@ -110,13 +120,57 @@ public class MapsActivity extends FragmentActivity implements OnMapReadyCallback
      * This is where we can add markers or lines, add listeners or move the camera.
      */
     @Override
-    public void onMapReady(GoogleMap googleMap) {
+    public void onMapReady(final GoogleMap googleMap) {
         this.googleMap = googleMap;
+        this.googleMap.setMyLocationEnabled(true);
+        this.googleMap.setOnMapClickListener(new GoogleMap.OnMapClickListener() {
+            @Override
+            public void onMapClick(LatLng latLng) {
+                if(selectedMarker != null) {
+                    selectedMarker.remove();
+                }
 
-        try {
-            this.googleMap.setMyLocationEnabled(true);
-        } catch (SecurityException e) {
+                // Place user selected marker on the map
+                selectedMarker = googleMap.addMarker(new MarkerOptions()
+                                .position(latLng));
 
+                // Retrieve pokemon within the area
+                Location location = new Location(LocationManager.GPS_PROVIDER);
+                location.setLatitude(latLng.latitude);
+                location.setLongitude(latLng.longitude);
+                requestPokemonInLocation(location);
+            }
+        });
+    }
+
+    /**
+     * Places a marker according associated with the pokemon
+     *
+     * @param catchablePokemon
+     */
+    private void placePokemonOnMap(CatchablePokemon catchablePokemon) {
+        LatLng location = new LatLng(catchablePokemon.getLatitude(), catchablePokemon.getLongitude());
+
+        // Get the image associated with the pokemon
+        String resourceName = "p" + catchablePokemon.getPokemonId().getNumber();
+        int drawableResourceId = getResources().getIdentifier(resourceName, "drawable", getPackageName());
+
+        // Place the marker on the map
+        Marker pokemonMarker = googleMap.addMarker(new MarkerOptions()
+                .position(location)
+                .title(catchablePokemon.getPokemonId().name())
+                .icon(BitmapDescriptorFactory.fromResource(drawableResourceId)));
+
+        // Set expiration time
+        if(catchablePokemon.getExpirationTimestampMs() != -1) {
+            long remainingDuration = catchablePokemon.getExpirationTimestampMs() - System.currentTimeMillis();
+            String expirationTime = String.format("%d min, %d sec",
+                    TimeUnit.MILLISECONDS.toMinutes(remainingDuration),
+                    TimeUnit.MILLISECONDS.toSeconds(remainingDuration) -
+                            TimeUnit.MINUTES.toSeconds(TimeUnit.MILLISECONDS.toMinutes(remainingDuration))
+            );
+
+            pokemonMarker.setSnippet(expirationTime);
         }
     }
 
@@ -144,14 +198,16 @@ public class MapsActivity extends FragmentActivity implements OnMapReadyCallback
 
     @Override
     public void onLocationChanged(Location location) {
-        if(location != null) {
-            LatLng loc = new LatLng(location.getLatitude(), location.getLongitude());
-            googleMap.addMarker(new MarkerOptions().position(loc));
-            if (googleMap != null) {
-                googleMap.animateCamera(CameraUpdateFactory.newLatLngZoom(loc, 16.0f));
-            }
+        if (location != null) {
+            if (!zoomedIntoCurrentLocation) {
+                LatLng loc = new LatLng(location.getLatitude(), location.getLongitude());
+                if (googleMap != null) {
+                    googleMap.animateCamera(CameraUpdateFactory.newLatLngZoom(loc, 16.0f));
+                }
 
-            requestPokemonInLocation(location);
+                zoomedIntoCurrentLocation = true;
+                requestPokemonInLocation(location);
+            }
         }
     }
 
@@ -182,33 +238,37 @@ public class MapsActivity extends FragmentActivity implements OnMapReadyCallback
 
     /**
      * Request pokemon in the area
+     *
      * @param location Location to retrieve pokemon in area
      */
     private void requestPokemonInLocation(final Location location) {
 
-        Observable<List<Pokemon>> nearbyPokemonObservable = Observable.create(new Observable.OnSubscribe<List<Pokemon>>() {
+        Observable<List<CatchablePokemon>> catchablePokemonObservable = Observable.create(new Observable.OnSubscribe<List<CatchablePokemon>>() {
 
             @Override
-            public void call(Subscriber<? super List<Pokemon>> subscriber) {
+            public void call(Subscriber<? super List<CatchablePokemon>> subscriber) {
                 try {
+                    // Log into Pokemon Go
                     OkHttpClient okHttpClient = new OkHttpClient();
-                    RequestEnvelopeOuterClass.RequestEnvelope.AuthInfo auth = new PTCLogin(okHttpClient).login("", "");
-                    PokemonGo pokemonGo = new PokemonGo(auth, okHttpClient);
+                    PokemonGo pokemonGo = new PokemonGo(new PtcCredentialProvider(okHttpClient, "pokemongoapitest", "pokemongo"), okHttpClient);
+
+                    // Set location
                     pokemonGo.setLocation(location.getLatitude(), location.getLongitude(), 0);
 
-                    List<Pokemon> pokemonList = pokemonGo.getPokebank().getPokemons();
-
-                    subscriber.onNext(pokemonList);
+                    // Get nearby pokemon
+                    subscriber.onNext(pokemonGo.getMap().getCatchablePokemon());
                     subscriber.onCompleted();
                 } catch (LoginFailedException e) {
+
+                } catch (RemoteServerException e) {
 
                 }
             }
         });
 
-        nearbyPokemonObservable.subscribeOn(Schedulers.newThread())
+        catchablePokemonObservable.subscribeOn(Schedulers.newThread())
                 .observeOn(AndroidSchedulers.mainThread())
-                .subscribe(new Subscriber<List<Pokemon>>() {
+                .subscribe(new Subscriber<List<CatchablePokemon>>() {
                     @Override
                     public void onCompleted() {
 
@@ -220,8 +280,15 @@ public class MapsActivity extends FragmentActivity implements OnMapReadyCallback
                     }
 
                     @Override
-                    public void onNext(List<Pokemon> pokemonList) {
-                        List<Pokemon> pokemons = pokemonList;
+                    public void onNext(List<CatchablePokemon> pokemonList) {
+                        for (CatchablePokemon catchablePokemon : pokemonList) {
+
+                            // Check if the pokemon is not already on the map
+                            if (!pokemonSet.contains(catchablePokemon.getSpawnPointId())) {
+                                placePokemonOnMap(catchablePokemon);
+                                pokemonSet.add(catchablePokemon.getSpawnPointId());
+                            }
+                        }
                     }
                 });
 
