@@ -1,15 +1,27 @@
-package com.anthonyng.pokemongomap;
+package com.anthonyng.pokemongomap.activity;
 
 import android.Manifest;
+import android.content.Intent;
+import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
 import android.location.Location;
 import android.location.LocationManager;
 import android.os.Bundle;
+import android.preference.PreferenceManager;
+import android.support.design.widget.Snackbar;
 import android.support.v4.app.ActivityCompat;
-import android.support.v4.app.FragmentActivity;
 import android.support.v4.content.ContextCompat;
+import android.support.v7.app.AppCompatActivity;
+import android.support.v7.widget.Toolbar;
 import android.util.Log;
+import android.view.Menu;
+import android.view.MenuItem;
+import android.view.View;
 
+import com.anthonyng.pokemongomap.R;
+import com.anthonyng.pokemongomap.preference.AppPreferences;
+import com.anthonyng.pokemongomap.util.ImageUtil;
+import com.anthonyng.pokemongomap.util.LocationUtil;
 import com.google.android.gms.common.ConnectionResult;
 import com.google.android.gms.common.api.GoogleApiClient;
 import com.google.android.gms.location.LocationListener;
@@ -29,6 +41,7 @@ import com.pokegoapi.auth.PtcCredentialProvider;
 import com.pokegoapi.exceptions.LoginFailedException;
 import com.pokegoapi.exceptions.RemoteServerException;
 
+import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
@@ -42,7 +55,7 @@ import rx.schedulers.Schedulers;
 /**
  * Displays a map showing all locations of pokemon in the area
  */
-public class MapsActivity extends FragmentActivity implements OnMapReadyCallback,
+public class MapsActivity extends AppCompatActivity implements OnMapReadyCallback,
         GoogleApiClient.ConnectionCallbacks,
         GoogleApiClient.OnConnectionFailedListener,
         LocationListener {
@@ -67,6 +80,9 @@ public class MapsActivity extends FragmentActivity implements OnMapReadyCallback
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_maps);
 
+        Toolbar toolbar = (Toolbar) findViewById(R.id.toolbar);
+        setSupportActionBar(toolbar);
+
         // Obtain the SupportMapFragment and get notified when the map is ready to be used.
         SupportMapFragment mapFragment = (SupportMapFragment) getSupportFragmentManager()
                 .findFragmentById(R.id.map);
@@ -83,6 +99,28 @@ public class MapsActivity extends FragmentActivity implements OnMapReadyCallback
         } else {
             // User already granted access, request for location updates
             initializeLocationServices();
+        }
+    }
+
+    // this works
+    @Override
+    public boolean onCreateOptionsMenu(Menu menu) {
+        getMenuInflater().inflate(R.menu.maps, menu);
+        return true;
+    }
+
+    @Override
+    public boolean onOptionsItemSelected(MenuItem item) {
+        switch (item.getItemId()) {
+            case R.id.action_filter:
+                startActivity(new Intent(this, FilterPokemonActivity.class));
+                return true;
+
+            default:
+                // If we got here, the user's action was not recognized.
+                // Invoke the superclass to handle it.
+                return super.onOptionsItemSelected(item);
+
         }
     }
 
@@ -126,13 +164,13 @@ public class MapsActivity extends FragmentActivity implements OnMapReadyCallback
         this.googleMap.setOnMapClickListener(new GoogleMap.OnMapClickListener() {
             @Override
             public void onMapClick(LatLng latLng) {
-                if(selectedMarker != null) {
+                if (selectedMarker != null) {
                     selectedMarker.remove();
                 }
 
                 // Place user selected marker on the map
                 selectedMarker = googleMap.addMarker(new MarkerOptions()
-                                .position(latLng));
+                        .position(latLng));
 
                 // Retrieve pokemon within the area
                 Location location = new Location(LocationManager.GPS_PROVIDER);
@@ -152,8 +190,8 @@ public class MapsActivity extends FragmentActivity implements OnMapReadyCallback
         LatLng location = new LatLng(catchablePokemon.getLatitude(), catchablePokemon.getLongitude());
 
         // Get the image associated with the pokemon
-        String resourceName = "p" + catchablePokemon.getPokemonId().getNumber();
-        int drawableResourceId = getResources().getIdentifier(resourceName, "drawable", getPackageName());
+        int drawableResourceId = ImageUtil.getPokemonDrawableResourceId(
+                getApplicationContext(), catchablePokemon.getPokemonId().getNumber());
 
         // Place the marker on the map
         Marker pokemonMarker = googleMap.addMarker(new MarkerOptions()
@@ -162,7 +200,7 @@ public class MapsActivity extends FragmentActivity implements OnMapReadyCallback
                 .icon(BitmapDescriptorFactory.fromResource(drawableResourceId)));
 
         // Set expiration time
-        if(catchablePokemon.getExpirationTimestampMs() != -1) {
+        if (catchablePokemon.getExpirationTimestampMs() != -1) {
             long remainingDuration = catchablePokemon.getExpirationTimestampMs() - System.currentTimeMillis();
             String expirationTime = String.format("%d min, %d sec",
                     TimeUnit.MILLISECONDS.toMinutes(remainingDuration),
@@ -204,6 +242,9 @@ public class MapsActivity extends FragmentActivity implements OnMapReadyCallback
                 if (googleMap != null) {
                     googleMap.animateCamera(CameraUpdateFactory.newLatLngZoom(loc, 16.0f));
                 }
+
+                selectedMarker = googleMap.addMarker(new MarkerOptions()
+                        .position(loc));
 
                 zoomedIntoCurrentLocation = true;
                 requestPokemonInLocation(location);
@@ -247,22 +288,31 @@ public class MapsActivity extends FragmentActivity implements OnMapReadyCallback
 
             @Override
             public void call(Subscriber<? super List<CatchablePokemon>> subscriber) {
+                List<LatLng> scanMap = new ArrayList<LatLng>();
+                makeHexScanMap(new LatLng(location.getLatitude(), location.getLongitude()), 12, 1, scanMap);
+                List<CatchablePokemon> catchablePokemonList = new ArrayList<>();
+
                 try {
                     // Log into Pokemon Go
                     OkHttpClient okHttpClient = new OkHttpClient();
                     PokemonGo pokemonGo = new PokemonGo(new PtcCredentialProvider(okHttpClient, "pokemongoapitest", "pokemongo"), okHttpClient);
 
-                    // Set location
-                    pokemonGo.setLocation(location.getLatitude(), location.getLongitude(), 0);
+                    for (LatLng latLng : scanMap) {
+                        // Set location
+                        pokemonGo.setLocation(latLng.latitude, latLng.longitude, 0);
 
-                    // Get nearby pokemon
-                    subscriber.onNext(pokemonGo.getMap().getCatchablePokemon());
-                    subscriber.onCompleted();
+                        // Fetch pokemon in location
+                        catchablePokemonList.addAll(pokemonGo.getMap().getCatchablePokemon());
+                    }
+
                 } catch (LoginFailedException e) {
-
+                    subscriber.onError(e);
                 } catch (RemoteServerException e) {
-
+                    subscriber.onError(e);
                 }
+
+                subscriber.onNext(catchablePokemonList);
+                subscriber.onCompleted();
             }
         });
 
@@ -276,22 +326,109 @@ public class MapsActivity extends FragmentActivity implements OnMapReadyCallback
 
                     @Override
                     public void onError(Throwable e) {
-
+                        Snackbar.make(findViewById(android.R.id.content),
+                                getString(R.string.snack_bar_pokemon_trainer_club_error),
+                                Snackbar.LENGTH_INDEFINITE)
+                                .setAction(getString(R.string.snack_bar_retry), new View.OnClickListener() {
+                                    @Override
+                                    public void onClick(View v) {
+                                        requestPokemonInLocation(LocationUtil.latLngToLocation(selectedMarker.getPosition()));
+                                    }
+                                }).show();
                     }
 
                     @Override
                     public void onNext(List<CatchablePokemon> pokemonList) {
                         for (CatchablePokemon catchablePokemon : pokemonList) {
+                            SharedPreferences preferences = PreferenceManager.getDefaultSharedPreferences(getApplicationContext());
 
-                            // Check if the pokemon is not already on the map
-                            if (!pokemonSet.contains(catchablePokemon.getSpawnPointId())) {
-                                placePokemonOnMap(catchablePokemon);
-                                pokemonSet.add(catchablePokemon.getSpawnPointId());
+                            // Check if user has filter
+                            boolean showPokemon = preferences.getBoolean(AppPreferences.PREFERENCE_KEY_SHOW_POKEMON
+                                    + catchablePokemon.getPokemonId().getNumber(), true);
+
+                            if (showPokemon) {
+                                // Check if the pokemon is not already on the map
+                                if (!pokemonSet.contains(catchablePokemon.getSpawnPointId())) {
+                                    placePokemonOnMap(catchablePokemon);
+                                    pokemonSet.add(catchablePokemon.getSpawnPointId());
+                                }
                             }
                         }
                     }
                 });
 
+    }
+
+    private List<LatLng> makeHexScanMap(LatLng loc, int steps, int layer_count, List<LatLng> scanMap) {
+        // Base case is do nothing
+        if (steps > 0) {
+            if (layer_count == 1) {
+                // Add in the point, no translation since 1st layer
+                scanMap.add(loc);
+            } else {
+                double distance = 200; // in meters
+                // add a point that is distance due north
+                scanMap.add(translate(loc, 0.0, distance));
+                // go south-east
+                for (int i = 0; i < layer_count - 1; i++) {
+                    LatLng prev = scanMap.get(scanMap.size() - 1);
+                    LatLng next = translate(prev, 120.0, distance);
+                    scanMap.add(next);
+                }
+                // go due south
+                for (int i = 0; i < layer_count - 1; i++) {
+                    LatLng prev = scanMap.get(scanMap.size() - 1);
+                    LatLng next = translate(prev, 180.0, distance);
+                    scanMap.add(next);
+                }
+                // go south-west
+                for (int i = 0; i < layer_count - 1; i++) {
+                    LatLng prev = scanMap.get(scanMap.size() - 1);
+                    LatLng next = translate(prev, 240.0, distance);
+                    scanMap.add(next);
+                }
+                // go north-west
+                for (int i = 0; i < layer_count - 1; i++) {
+                    LatLng prev = scanMap.get(scanMap.size() - 1);
+                    LatLng next = translate(prev, 300.0, distance);
+                    scanMap.add(next);
+                }
+                // go due north
+                for (int i = 0; i < layer_count - 1; i++) {
+                    LatLng prev = scanMap.get(scanMap.size() - 1);
+                    LatLng next = translate(prev, 0.0, distance);
+                    scanMap.add(next);
+                }
+                // go north-east
+                for (int i = 0; i < layer_count - 2; i++) {
+                    LatLng prev = scanMap.get(scanMap.size() - 1);
+                    LatLng next = translate(prev, 60.0, distance);
+                    scanMap.add(next);
+                }
+            }
+            return makeHexScanMap(scanMap.get(hexagonal_number(layer_count - 1)), steps - 1, layer_count + 1, scanMap);
+        } else {
+            return scanMap;
+        }
+    }
+
+    private LatLng translate(LatLng cur, double bearing, double distance) {
+        double earth = 6378.1; // Radius of Earth in km
+        double rad_bear = Math.toRadians(bearing);
+        double dist_km = distance / 1000;
+        double lat1 = Math.toRadians(cur.latitude);
+        double lon1 = Math.toRadians(cur.longitude);
+        double lat2 = Math.asin(Math.sin(lat1) * Math.cos(dist_km / earth) +
+                Math.cos(lat1) * Math.sin(dist_km / earth) * Math.cos(rad_bear));
+        double lon2 = lon1 + Math.atan2(Math.sin(rad_bear) * Math.sin(dist_km / earth) * Math.cos(lat1),
+                Math.cos(dist_km / earth) - Math.sin(lat1) * Math.sin(lat2));
+        lat2 = Math.toDegrees(lat2);
+        lon2 = Math.toDegrees(lon2);
+        return new LatLng(lat2, lon2);
+    }
+
+    public int hexagonal_number(int n) {
+        return (n == 0) ? 0 : 3 * n * (n - 1) + 1;
     }
 
     //endregion
